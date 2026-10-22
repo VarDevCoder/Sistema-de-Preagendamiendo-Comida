@@ -53,3 +53,20 @@ export async function requireRestaurantAccess(restaurantId: string): Promise<Ses
   if (!member) redirect("/panel");
   return user;
 }
+
+/**
+ * Para rutas /panel/[slug]/…: exige sesión de restaurante (o super admin) con
+ * acceso a ESE restaurante. Si no, redirige. Devuelve usuario y restaurante.
+ */
+export async function requireRestaurantBySlug(slug: string) {
+  const user = await requireUser(["RESTAURANT_ADMIN", "SUPER_ADMIN"]);
+  const restaurant = await db.restaurant.findUnique({ where: { slug } });
+  if (!restaurant) redirect("/panel");
+  if (user.role !== "SUPER_ADMIN") {
+    const member = await db.restaurantMember.findUnique({
+      where: { userId_restaurantId: { userId: user.id, restaurantId: restaurant.id } },
+    });
+    if (!member) redirect("/panel");
+  }
+  return { user, restaurant };
+}

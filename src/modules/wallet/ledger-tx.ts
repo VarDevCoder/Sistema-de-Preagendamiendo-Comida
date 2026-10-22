@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import type { Tx } from "@/lib/db-types";
 import type { LedgerTxType } from "@/generated/prisma/enums";
 import { accounts, describeAccount } from "./accounts";
 import { assertBalanced, walletBalanceFromEntries, type Entry } from "./entries";
@@ -6,7 +6,7 @@ import { assertBalanced, walletBalanceFromEntries, type Entry } from "./entries"
 // Núcleo del ledger: funciona sobre una transacción SQL que provee quien llama
 // (server actions, webhooks, seed). No importa el cliente global de la base.
 
-export type Tx = Prisma.TransactionClient;
+export type { Tx };
 
 export type PostLedgerInput = {
   type: LedgerTxType;

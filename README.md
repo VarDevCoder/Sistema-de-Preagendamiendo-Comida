@@ -7,6 +7,8 @@ Moneda PYG (sin decimales) · Zona horaria America/Asuncion.
 
 ## Estado
 
+Especificación completa, decisiones y plan: [`docs/relevamiento.md`](docs/relevamiento.md). Guía para agentes: [`CLAUDE.md`](CLAUDE.md).
+
 | Fase | Estado | Documento |
 |---|---|---|
 | 1. Modelo de datos | ✅ | [`docs/fase-1-modelo-de-datos.md`](docs/fase-1-modelo-de-datos.md) |
