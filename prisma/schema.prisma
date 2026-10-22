@@ -953,9 +953,11 @@ model Subscription {
   checkoutKey  String?            @unique
 
   // Totales (= suma de los pedidos del plan al momento de pagar)
+  // total = itemsSubtotal − discountAmount + deliveryFee (Σ envíos de los días con delivery)
   itemsSubtotal  Int
   discountBps    Int
   discountAmount Int
+  deliveryFee    Int @default(0)
   total          Int
 
   // Snapshot de la política de cancelación vigente al suscribirse
