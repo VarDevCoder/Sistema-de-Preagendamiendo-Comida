@@ -1,0 +1,1183 @@
+// =============================================================================
+// Plataforma de pedidos anticipados prepagos — modelo de datos
+// =============================================================================
+// Convenciones (ver docs/fase-1-modelo-de-datos.md):
+// - Dinero: Int en guaraníes (PYG, sin decimales).
+// - Porcentajes: Int en "basis points" (bps). 1000 = 10%, 10000 = 100%.
+// - Fechas de servicio (el "día" del pedido): @db.Date, interpretadas en America/Asuncion.
+// - Horas del día (franjas, hora de corte): Int en minutos desde 00:00 (720 = 12:00).
+// - Instantes (creación, vencimiento de reservas, pagos): timestamptz.
+// - Nunca se borra nada con historia: platos, grupos y opciones usan deletedAt (soft delete).
+// - Pedidos guardan SNAPSHOTS (nombres, precios, macros) para no depender del menú vivo.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  RESTAURANT_ADMIN
+  SUPER_ADMIN
+}
+
+enum MemberRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum RestaurantStatus {
+  PENDING // dado de alta, configurando; no visible para clientes
+  ACTIVE
+  SUSPENDED // no recibe pedidos nuevos; los ya pagados siguen su curso
+  CLOSED // baja definitiva (soft)
+}
+
+enum Allergen {
+  GLUTEN
+  LACTOSE
+  PEANUT
+  TREE_NUTS
+  SHELLFISH
+  FISH
+  EGG
+  SOY
+  SESAME
+  OTHER
+}
+
+enum Fulfillment {
+  PICKUP
+  DELIVERY
+}
+
+enum SlotScope {
+  PICKUP
+  DELIVERY
+  BOTH
+}
+
+enum PreferenceTagKind {
+  REMOVE_INGREDIENT // "sin cebolla"
+  COOKING // "bien cocido", "tostadito"
+  SIDE // "con ensalada"
+  OTHER
+}
+
+enum PreferenceScope {
+  GENERAL // aplica a cualquier plato/restaurante vía PreferenceTag
+  DISH // aplica a un plato concreto vía ModifierOption
+}
+
+enum PlanPeriodMode {
+  NEXT_MONTH // solo el mes siguiente
+  REST_OF_MONTH_AND_NEXT // también el resto del mes en curso
+}
+
+enum OrderKind {
+  SINGLE // pedido programado suelto
+  PLAN_DAY // un día de un plan mensual
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT // cupo y stock reservados hasta holdExpiresAt
+  CONFIRMED
+  IN_PREPARATION
+  READY
+  DELIVERED
+  CANCELLED_BY_RESTAURANT
+  CANCELLED_BY_CUSTOMER
+  EXPIRED // no se pagó dentro de la reserva
+  PAYMENT_FAILED
+}
+
+enum DiscountKind {
+  NONE
+  ADVANCE // descuento por anticipación
+  MONTHLY_PLAN
+}
+
+enum SubscriptionStatus {
+  PENDING_PAYMENT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentPurpose {
+  ORDER
+  SUBSCRIPTION
+  ORDER_ADJUSTMENT // diferencia por cambio de plato/modificadores en el plan
+}
+
+enum PaymentProviderKind {
+  WALLET // pagado 100% con saldo de billetera
+  MOCK
+  BANCARD
+  PAGOPAR
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+enum OrderChangeSettlement {
+  NONE // mismo precio
+  CHARGED // el cliente pagó la diferencia
+  WALLET_CREDIT // se acreditó la diferencia en la billetera
+}
+
+enum LedgerAccountType {
+  CUSTOMER_WALLET // pasivo: saldo del cliente (uno por usuario)
+  RESTAURANT_PAYABLE // pasivo: lo que la plataforma le debe al restaurante (uno por restaurante)
+  PLATFORM_COMMISSION // ingreso: comisiones de la plataforma
+  GATEWAY_CLEARING // activo: cobrado por la pasarela, pendiente de acreditar a la cuenta bancaria
+  PLATFORM_BANK // activo: cuenta bancaria de la plataforma
+  PLATFORM_GOODWILL // gasto: reembolsos que absorbe la plataforma (reclamos)
+}
+
+enum LedgerTxType {
+  PAYMENT_CAPTURED // pago aprobado (pasarela y/o billetera) de pedido, plan o ajuste
+  REFUND_TO_WALLET // cancelación del restaurante / del cliente / baja de precio en el plan
+  CLAIM_REFUND // reembolso resuelto por super admin
+  GATEWAY_SETTLEMENT // la pasarela deposita en el banco de la plataforma
+  RESTAURANT_PAYOUT // liquidación pagada al restaurante
+  REVERSAL // corrección: movimiento inverso de otra transacción
+}
+
+enum SettlementStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+enum ClaimStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum ClaimReason {
+  NOT_DELIVERED
+  WRONG_ITEMS
+  QUALITY
+  ALLERGY_ISSUE
+  LATE
+  OTHER
+}
+
+enum NotificationType {
+  ORDER_CONFIRMED
+  ORDER_REMINDER
+  ORDER_READY
+  ORDER_CANCELLED
+  PLAN_CONFIRMED
+  PLAN_DAY_CHANGED
+  WALLET_CREDITED
+  CLAIM_UPDATED
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// -----------------------------------------------------------------------------
+// Auth.js (tablas del adapter) + usuarios
+// -----------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime? @db.Timestamptz(3)
+  image         String?
+  passwordHash  String? // null si solo usa Google
+  role          Role      @default(CUSTOMER)
+  phone         String?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  accounts          Account[]
+  sessions          Session[]
+  customerProfile   CustomerProfile?
+  addresses         CustomerAddress[]
+  preferences       CustomerPreference[]
+  memberships       RestaurantMember[]
+  orders            Order[]              @relation("CustomerOrders")
+  subscriptions     Subscription[]
+  payments          Payment[]
+  ledgerAccounts    LedgerAccount[]
+  claims            Claim[]              @relation("ClaimCustomer")
+  claimsResolved    Claim[]              @relation("ClaimResolver")
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+  orderEvents       OrderStatusEvent[]
+  orderChanges      OrderChange[]
+  auditLogs         AuditLog[]
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime @db.Timestamptz(3)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime @db.Timestamptz(3)
+
+  @@id([identifier, token])
+}
+
+// Datos del cliente. Las alergias se precargan en cada pedido nuevo.
+model CustomerProfile {
+  userId       String     @id
+  allergens    Allergen[]
+  allergyOther String?    @db.VarChar(80)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CustomerAddress {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String // "Casa", "Oficina"
+  street    String
+  reference String?
+  zoneId    String
+  lat       Float?
+  lng       Float?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zone Zone @relation(fields: [zoneId], references: [id])
+
+  @@index([userId])
+}
+
+// Catálogo de la plataforma para preferencias "generales" que deben funcionar
+// entre restaurantes distintos (cada restaurante etiqueta sus opciones con estos tags).
+model PreferenceTag {
+  id        String            @id @default(cuid())
+  slug      String            @unique // "sin-cebolla", "bien-cocido"
+  label     String
+  kind      PreferenceTagKind
+  sortOrder Int               @default(0)
+
+  options     ModifierOption[]
+  preferences CustomerPreference[]
+}
+
+// Preferencia guardada del cliente.
+// - GENERAL: tagId  → se precarga en cualquier plato que tenga una opción con ese tag.
+// - DISH:    dishId + optionId → se precarga esa opción exacta en ese plato.
+// Si no aplica al plato (no existe la opción/tag), se ignora sin error.
+model CustomerPreference {
+  id        String          @id @default(cuid())
+  userId    String
+  scope     PreferenceScope
+  tagId     String?
+  dishId    String?
+  optionId  String?
+  createdAt DateTime        @default(now()) @db.Timestamptz(3)
+
+  user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tag    PreferenceTag?  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  dish   Dish?           @relation(fields: [dishId], references: [id], onDelete: Cascade)
+  option ModifierOption? @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tagId])
+  @@unique([userId, dishId, optionId])
+  @@index([userId])
+}
+
+// -----------------------------------------------------------------------------
+// Plataforma
+// -----------------------------------------------------------------------------
+
+// Fila única (id = 1) con parámetros globales.
+model PlatformSettings {
+  id                   Int      @id @default(1)
+  holdMinutes          Int      @default(10) // reserva de cupo/stock mientras se paga
+  defaultCommissionBps Int      @default(1000)
+  macroTolerancePct    Int      @default(15) // coherencia kcal vs macros (aviso, no bloquea)
+  updatedAt            DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model Zone {
+  id   String @id @default(cuid())
+  name String // "Villa Morra", "Centro"
+  slug String @unique
+  city String @default("Asunción")
+
+  restaurants   Restaurant[]
+  deliveryZones DeliveryZone[]
+  addresses     CustomerAddress[]
+}
+
+model CuisineType {
+  id          String       @id @default(cuid())
+  slug        String       @unique
+  name        String
+  restaurants Restaurant[]
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String // "restaurant.suspend", "commission.update", ...
+  entityType String
+  entityId   String
+  data       Json?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+}
+
+// -----------------------------------------------------------------------------
+// Restaurantes y configuración
+// -----------------------------------------------------------------------------
+
+model Restaurant {
+  id          String           @id @default(cuid())
+  slug        String           @unique
+  name        String
+  description String?
+  logoUrl     String?
+  coverUrl    String?
+  phone       String?
+  email       String?
+  addressLine String
+  zoneId      String
+  lat         Float?
+  lng         Float?
+  status      RestaurantStatus @default(PENDING)
+
+  // Modalidades
+  pickupEnabled   Boolean @default(true)
+  deliveryEnabled Boolean @default(false)
+
+  // Hora de corte: los pedidos para el día D cierran el día (D - cutoffDaysBefore) a cutoffMinute.
+  // Ej.: 1 y 1200 → el día anterior a las 20:00.
+  cutoffDaysBefore Int @default(1)
+  cutoffMinute     Int @default(1200)
+  maxDaysAhead     Int @default(30) // hasta cuántos días adelante se puede pedir
+
+  // Cancelación de pedidos sueltos por parte del cliente (hasta la hora de corte).
+  customerCancelRefundBps Int @default(10000)
+
+  // Comisión de la plataforma (la define el super admin)
+  commissionBps Int @default(1000)
+
+  // Información nutricional obligatoria para publicar platos (la define el super admin)
+  macrosRequired Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  zone            Zone                  @relation(fields: [zoneId], references: [id])
+  cuisines        CuisineType[]
+  members         RestaurantMember[]
+  openingHours    OpeningHours[]
+  closures        RestaurantClosure[]
+  deliveryZones   DeliveryZone[]
+  discountTiers   AdvanceDiscountTier[]
+  planConfig      MonthlyPlanConfig?
+  categories      MenuCategory[]
+  dishes          Dish[]
+  modifierGroups  ModifierGroup[]
+  dailyDishStocks DailyDishStock[]
+  slotTemplates   TimeSlotTemplate[]
+  dailySlots      DailySlot[]
+  orders          Order[]
+  subscriptions   Subscription[]
+  ledgerAccounts  LedgerAccount[]
+  settlements     Settlement[]
+  claims          Claim[]
+
+  @@index([status, zoneId])
+}
+
+model RestaurantMember {
+  userId       String
+  restaurantId String
+  role         MemberRole @default(OWNER)
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, restaurantId])
+  @@index([restaurantId])
+}
+
+// Días y horarios de atención. weekday: 1 = lunes … 7 = domingo (ISO).
+model OpeningHours {
+  id           String @id @default(cuid())
+  restaurantId String
+  weekday      Int
+  opensMinute  Int
+  closesMinute Int
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, weekday])
+}
+
+// Feriados / días cerrados puntuales.
+model RestaurantClosure {
+  id           String   @id @default(cuid())
+  restaurantId String
+  date         DateTime @db.Date
+  reason       String?
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, date])
+}
+
+model DeliveryZone {
+  restaurantId String
+  zoneId       String
+  fee          Int // PYG
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  zone       Zone       @relation(fields: [zoneId], references: [id])
+
+  @@id([restaurantId, zoneId])
+}
+
+// Escalones de descuento por anticipación. Se aplica el escalón con mayor
+// minHoursBefore que se cumpla (horas entre la creación del pedido y el inicio de la franja).
+model AdvanceDiscountTier {
+  id             String @id @default(cuid())
+  restaurantId   String
+  minHoursBefore Int
+  discountBps    Int
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, minHoursBefore])
+}
+
+model MonthlyPlanConfig {
+  restaurantId      String         @id
+  enabled           Boolean        @default(false)
+  discountBps       Int            @default(2000)
+  weekdays          Int[] // ISO 1..7 incluidos en el plan
+  periodMode        PlanPeriodMode @default(NEXT_MONTH)
+  signupDeadlineDay Int            @default(25) // día del mes en curso (hasta 23:59) para suscribirse al siguiente
+  minDays           Int            @default(5)
+  // Política de cancelación por día: hasta (D - cancelDaysBefore) a cancelMinute.
+  cancelDaysBefore  Int            @default(1)
+  cancelMinute      Int            @default(1200)
+  cancelRefundBps   Int            @default(10000) // % del valor del día que vuelve a la billetera
+  allowPause        Boolean        @default(true)
+  updatedAt         DateTime       @updatedAt @db.Timestamptz(3)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+}
+
+// -----------------------------------------------------------------------------
+// Menú, macros y modificadores
+// -----------------------------------------------------------------------------
+
+model MenuCategory {
+  id           String @id @default(cuid())
+  restaurantId String
+  name         String
+  sortOrder    Int    @default(0)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dishes     Dish[]
+
+  @@index([restaurantId])
+}
+
+model Dish {
+  id           String  @id @default(cuid())
+  restaurantId String
+  categoryId   String?
+  name         String
+  description  String?
+  photoUrl     String?
+  basePrice    Int // precio normal en PYG
+  isActive     Boolean @default(true)
+  allowNotes   Boolean @default(false) // nota libre (máx. 140) por ítem
+  sortOrder    Int     @default(0)
+
+  // Información nutricional por porción estándar (la carga el restaurante; todo opcional).
+  // kcal == null → "Sin info nutricional".
+  servingGrams Int?
+  kcal         Int?
+  proteinG     Float?
+  carbsG       Float?
+  fatG         Float?
+  fiberG       Float?
+  sugarG       Float?
+  sodiumMg     Int?
+
+  deletedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+
+  restaurant     Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  category       MenuCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  modifierGroups DishModifierGroup[]
+  schedules      DishSchedule[]
+  dailyStocks    DailyDishStock[]
+  orderItems     OrderItem[]
+  preferences    CustomerPreference[]
+
+  @@index([restaurantId, isActive])
+}
+
+// Grupo de opciones reutilizable ("Punto de cocción", "Guarnición", "Quitar", "Extras").
+model ModifierGroup {
+  id           String    @id @default(cuid())
+  restaurantId String
+  name         String
+  description  String?
+  required     Boolean   @default(false)
+  minSelect    Int       @default(0)
+  maxSelect    Int       @default(1) // 1 = selección única
+  deletedAt    DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  restaurant Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  options    ModifierOption[]
+  dishes     DishModifierGroup[]
+
+  @@index([restaurantId])
+}
+
+model ModifierOption {
+  id         String  @id @default(cuid())
+  groupId    String
+  name       String
+  priceDelta Int     @default(0) // PYG; positivo para extras
+  isDefault  Boolean @default(false)
+  isActive   Boolean @default(true) // desactivación temporal ("sin queso hoy")
+  sortOrder  Int     @default(0)
+  dailyStock Int? // null = sin límite; si tiene valor se valida igual que el stock de platos
+
+  preferenceTagId String?
+
+  // Delta de macros (por defecto 0). Pueden ser negativos ("Sin papas").
+  kcalDelta     Int   @default(0)
+  proteinDeltaG Float @default(0)
+  carbsDeltaG   Float @default(0)
+  fatDeltaG     Float @default(0)
+  fiberDeltaG   Float @default(0)
+  sugarDeltaG   Float @default(0)
+  sodiumDeltaMg Int   @default(0)
+
+  deletedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+
+  group         ModifierGroup        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  preferenceTag PreferenceTag?       @relation(fields: [preferenceTagId], references: [id], onDelete: SetNull)
+  dailyStocks   OptionDailyStock[]
+  orderItemMods OrderItemModifier[]
+  preferences   CustomerPreference[]
+
+  @@index([groupId])
+}
+
+// Asignación muchos a muchos plato ↔ grupo, con orden por plato.
+model DishModifierGroup {
+  dishId    String
+  groupId   String
+  sortOrder Int    @default(0)
+
+  dish  Dish          @relation(fields: [dishId], references: [id], onDelete: Cascade)
+  group ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([dishId, groupId])
+  @@index([groupId])
+}
+
+// -----------------------------------------------------------------------------
+// Disponibilidad: menú rotativo, stock diario y franjas con cupo
+// -----------------------------------------------------------------------------
+
+// Plantilla semanal: "este plato se ofrece los lunes con stock 30".
+model DishSchedule {
+  dishId       String
+  weekday      Int
+  defaultStock Int
+
+  dish Dish @relation(fields: [dishId], references: [id], onDelete: Cascade)
+
+  @@id([dishId, weekday])
+}
+
+// Stock concreto de un plato en una fecha. Se materializa desde DishSchedule
+// (o lo crea/edita el restaurante). Es la fila que se BLOQUEA (FOR UPDATE)
+// al reservar, y lo vendido se calcula desde los pedidos que retienen stock.
+model DailyDishStock {
+  id           String   @id @default(cuid())
+  restaurantId String
+  dishId       String
+  date         DateTime @db.Date
+  stock        Int
+  isClosed     Boolean  @default(false) // el restaurante sacó el plato ese día
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dish       Dish       @relation(fields: [dishId], references: [id], onDelete: Cascade)
+
+  @@unique([dishId, date])
+  @@index([restaurantId, date])
+}
+
+// Stock diario de una opción con límite propio (ej. extra panceta: 10 por día).
+model OptionDailyStock {
+  id       String   @id @default(cuid())
+  optionId String
+  date     DateTime @db.Date
+  stock    Int
+
+  option ModifierOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, date])
+}
+
+// Plantilla semanal de franjas: lunes 12:00–12:30, cupo 20.
+model TimeSlotTemplate {
+  id           String    @id @default(cuid())
+  restaurantId String
+  weekday      Int
+  startMinute  Int
+  endMinute    Int
+  capacity     Int // máximo de pedidos
+  scope        SlotScope @default(BOTH)
+  isActive     Boolean   @default(true)
+
+  restaurant Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dailySlots DailySlot[]
+
+  @@index([restaurantId, weekday])
+}
+
+// Franja concreta en una fecha (materializada desde la plantilla o creada a mano).
+// Es la fila que se BLOQUEA al reservar cupo. Se "cierra sola" cuando
+// los pedidos que retienen cupo alcanzan capacity.
+model DailySlot {
+  id           String    @id @default(cuid())
+  restaurantId String
+  templateId   String?
+  date         DateTime  @db.Date
+  startMinute  Int
+  endMinute    Int
+  capacity     Int
+  scope        SlotScope @default(BOTH)
+  isClosed     Boolean   @default(false) // cierre manual
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+
+  restaurant Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  template   TimeSlotTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  orders     Order[]
+
+  @@unique([restaurantId, date, startMinute, scope])
+  @@index([restaurantId, date])
+}
+
+// -----------------------------------------------------------------------------
+// Pedidos (con snapshots)
+// -----------------------------------------------------------------------------
+
+model Order {
+  id             String    @id @default(cuid())
+  code           String    @unique // corto y legible: "K7P-4QX"
+  customerId     String
+  restaurantId   String
+  kind           OrderKind @default(SINGLE)
+  subscriptionId String?
+  checkoutKey    String?   @unique // idempotencia del checkout
+
+  // Cuándo y cómo
+  serviceDate     DateTime    @db.Date
+  slotId          String
+  slotStartMinute Int // snapshot
+  slotEndMinute   Int
+  fulfillment     Fulfillment
+  deliveryAddress Json? // snapshot de la dirección
+  cutoffAt        DateTime    @db.Timestamptz(3) // calculado al crear (hora de corte de serviceDate)
+
+  status        OrderStatus @default(PENDING_PAYMENT)
+  holdExpiresAt DateTime?   @db.Timestamptz(3) // fin de la reserva de 10 min
+
+  // Precio (calculado en servidor). total = itemsSubtotal - discountAmount + deliveryFee
+  itemsSubtotal    Int // precio normal: Σ (base + Σ priceDelta) × cantidad
+  discountKind     DiscountKind @default(NONE)
+  discountBps      Int          @default(0)
+  discountAmount   Int          @default(0)
+  deliveryFee      Int          @default(0)
+  total            Int
+  commissionBps    Int // snapshot de la comisión vigente
+  commissionAmount Int
+
+  // Totales nutricionales del pedido (snapshot). nutritionComplete = todos los ítems tenían macros.
+  nutritionComplete Boolean @default(false)
+  kcal              Int?
+  proteinG          Float?
+  carbsG            Float?
+  fatG              Float?
+  fiberG            Float?
+  sugarG            Float?
+  sodiumMg          Int?
+
+  // Alergias (precargadas del perfil, editables por pedido)
+  allergens    Allergen[]
+  allergyOther String?    @db.VarChar(80)
+
+  confirmedAt     DateTime? @db.Timestamptz(3)
+  inPreparationAt DateTime? @db.Timestamptz(3)
+  readyAt         DateTime? @db.Timestamptz(3)
+  deliveredAt     DateTime? @db.Timestamptz(3)
+  cancelledAt     DateTime? @db.Timestamptz(3)
+  cancelReason    String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  customer      User                @relation("CustomerOrders", fields: [customerId], references: [id])
+  restaurant    Restaurant          @relation(fields: [restaurantId], references: [id])
+  subscription  Subscription?       @relation(fields: [subscriptionId], references: [id])
+  slot          DailySlot           @relation(fields: [slotId], references: [id])
+  items         OrderItem[]
+  events        OrderStatusEvent[]
+  changes       OrderChange[]
+  payments      Payment[]
+  ledgerTxs     LedgerTransaction[]
+  claims        Claim[]
+  notifications Notification[]
+
+  @@index([restaurantId, serviceDate, status])
+  @@index([customerId, serviceDate])
+  @@index([slotId, status])
+  @@index([status, holdExpiresAt])
+  @@index([subscriptionId])
+}
+
+model OrderItem {
+  id       String @id @default(cuid())
+  orderId  String
+  dishId   String
+  quantity Int    @default(1)
+
+  // Snapshot del plato
+  dishName     String
+  dishPhotoUrl String?
+
+  // Precio por unidad: unitListPrice = unitBasePrice + unitModifiersTotal
+  unitBasePrice      Int
+  unitModifiersTotal Int
+  unitListPrice      Int
+  lineListTotal      Int // unitListPrice × quantity
+  lineDiscount       Int // parte del descuento del pedido asignada a esta línea
+  lineTotal          Int
+
+  // Agrupación en cocina: ids de opciones ordenados ("" = sin modificadores) + texto legible
+  modifierKey     String
+  modifierSummary String // "A punto · Sin cebolla · Extra queso"
+
+  notes String? @db.VarChar(140)
+
+  // Snapshot de macros POR UNIDAD (plato + deltas, mínimo 0). null = sin info.
+  servingGrams Int?
+  kcal         Int?
+  proteinG     Float?
+  carbsG       Float?
+  fatG         Float?
+  fiberG       Float?
+  sugarG       Float?
+  sodiumMg     Int?
+
+  order     Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  dish      Dish                @relation(fields: [dishId], references: [id])
+  modifiers OrderItemModifier[]
+
+  @@index([orderId])
+  @@index([dishId, modifierKey])
+}
+
+// Snapshot de cada opción elegida (nombre, precio y macros al momento de pedir).
+model OrderItemModifier {
+  id          String @id @default(cuid())
+  orderItemId String
+  optionId    String
+  groupId     String
+  groupName   String
+  optionName  String
+  priceDelta  Int
+  sortOrder   Int    @default(0)
+
+  kcalDelta     Int   @default(0)
+  proteinDeltaG Float @default(0)
+  carbsDeltaG   Float @default(0)
+  fatDeltaG     Float @default(0)
+  fiberDeltaG   Float @default(0)
+  sugarDeltaG   Float @default(0)
+  sodiumDeltaMg Int   @default(0)
+
+  orderItem OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  option    ModifierOption @relation(fields: [optionId], references: [id])
+
+  @@index([orderItemId])
+  @@index([optionId])
+}
+
+model OrderStatusEvent {
+  id         String       @id @default(cuid())
+  orderId    String
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  actorId    String?
+  reason     String?
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([orderId])
+}
+
+// Cambio de plato / modificadores de un día del plan (antes de la hora de corte).
+// Los ítems del pedido se reemplazan; el snapshot anterior queda acá.
+model OrderChange {
+  id                  String                @id @default(cuid())
+  orderId             String
+  changedById         String
+  previousItems       Json
+  newItems            Json
+  previousTotal       Int
+  newTotal            Int
+  difference          Int // newTotal - previousTotal
+  settlement          OrderChangeSettlement
+  paymentId           String?               @unique
+  ledgerTransactionId String?               @unique
+  createdAt           DateTime              @default(now()) @db.Timestamptz(3)
+
+  order     Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy User               @relation(fields: [changedById], references: [id])
+  payment   Payment?           @relation(fields: [paymentId], references: [id])
+  ledgerTx  LedgerTransaction? @relation(fields: [ledgerTransactionId], references: [id])
+
+  @@index([orderId])
+}
+
+// -----------------------------------------------------------------------------
+// Plan mensual
+// -----------------------------------------------------------------------------
+
+// Un plan = un pago; genera un Order (kind = PLAN_DAY) por cada día elegido,
+// así la lista de producción lo trata igual que a un pedido suelto.
+model Subscription {
+  id           String             @id @default(cuid())
+  code         String             @unique
+  customerId   String
+  restaurantId String
+  periodStart  DateTime           @db.Date
+  periodEnd    DateTime           @db.Date
+  status       SubscriptionStatus @default(PENDING_PAYMENT)
+  checkoutKey  String?            @unique
+
+  // Totales (= suma de los pedidos del plan al momento de pagar)
+  itemsSubtotal  Int
+  discountBps    Int
+  discountAmount Int
+  total          Int
+
+  // Snapshot de la política de cancelación vigente al suscribirse
+  cancelDaysBefore Int
+  cancelMinute     Int
+  cancelRefundBps  Int
+  allowPause       Boolean
+
+  holdExpiresAt DateTime? @db.Timestamptz(3)
+  confirmedAt   DateTime? @db.Timestamptz(3)
+  cancelledAt   DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  customer   User                @relation(fields: [customerId], references: [id])
+  restaurant Restaurant          @relation(fields: [restaurantId], references: [id])
+  orders     Order[]
+  payments   Payment[]
+  ledgerTxs  LedgerTransaction[]
+
+  @@index([restaurantId, periodStart, status])
+  @@index([customerId, periodStart])
+}
+
+// -----------------------------------------------------------------------------
+// Pagos
+// -----------------------------------------------------------------------------
+
+model Payment {
+  id             String              @id @default(cuid())
+  customerId     String
+  purpose        PaymentPurpose
+  orderId        String?
+  subscriptionId String?
+  amount         Int // total a cobrar
+  walletAmount   Int                 @default(0) // parte cubierta con billetera
+  gatewayAmount  Int // parte cobrada por la pasarela (amount - walletAmount)
+  provider       PaymentProviderKind
+  providerRef    String? // id de la transacción en Bancard/Pagopar/mock
+  status         PaymentStatus       @default(PENDING)
+  checkoutUrl    String?
+  idempotencyKey String              @unique
+  expiresAt      DateTime            @db.Timestamptz(3)
+  approvedAt     DateTime?           @db.Timestamptz(3)
+  failureReason  String?
+  metadata       Json?
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+
+  customer      User                  @relation(fields: [customerId], references: [id])
+  order         Order?                @relation(fields: [orderId], references: [id])
+  subscription  Subscription?         @relation(fields: [subscriptionId], references: [id])
+  webhookEvents PaymentWebhookEvent[]
+  ledgerTxs     LedgerTransaction[]
+  orderChange   OrderChange?
+
+  @@unique([provider, providerRef])
+  @@index([status, expiresAt])
+  @@index([orderId])
+  @@index([subscriptionId])
+}
+
+// Idempotencia de webhooks: (provider, eventId) único. Un evento repetido
+// choca contra la restricción y no se vuelve a procesar.
+model PaymentWebhookEvent {
+  id          String              @id @default(cuid())
+  provider    PaymentProviderKind
+  eventId     String
+  paymentId   String?
+  type        String
+  payload     Json
+  receivedAt  DateTime            @default(now()) @db.Timestamptz(3)
+  processedAt DateTime?           @db.Timestamptz(3)
+  error       String?
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@unique([provider, eventId])
+}
+
+// -----------------------------------------------------------------------------
+// Ledger inmutable de doble registro (billetera, comisiones, liquidaciones)
+// -----------------------------------------------------------------------------
+// Convención: amount > 0 = DÉBITO, amount < 0 = CRÉDITO. Cada transacción suma 0
+// (trigger diferido en la migración). UPDATE/DELETE bloqueados por trigger.
+// Saldo de billetera = -Σ amount de su cuenta CUSTOMER_WALLET.
+
+model LedgerAccount {
+  id           String            @id @default(cuid())
+  code         String            @unique // "wallet:<userId>", "restaurant:<id>", "platform:commission"
+  type         LedgerAccountType
+  userId       String?
+  restaurantId String?
+  createdAt    DateTime          @default(now()) @db.Timestamptz(3)
+
+  user       User?         @relation(fields: [userId], references: [id])
+  restaurant Restaurant?   @relation(fields: [restaurantId], references: [id])
+  entries    LedgerEntry[]
+
+  @@index([type])
+}
+
+model LedgerTransaction {
+  id             String       @id @default(cuid())
+  type           LedgerTxType
+  description    String
+  idempotencyKey String       @unique // "payment:<id>:captured", "order:<id>:restaurant-cancel"
+  orderId        String?
+  subscriptionId String?
+  paymentId      String?
+  settlementId   String?
+  claimId        String?
+  reversalOfId   String?      @unique
+  createdById    String?
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+
+  entries      LedgerEntry[]
+  order        Order?             @relation(fields: [orderId], references: [id])
+  subscription Subscription?      @relation(fields: [subscriptionId], references: [id])
+  payment      Payment?           @relation(fields: [paymentId], references: [id])
+  settlement   Settlement?        @relation(fields: [settlementId], references: [id])
+  claim        Claim?             @relation(fields: [claimId], references: [id])
+  reversalOf   LedgerTransaction? @relation("Reversal", fields: [reversalOfId], references: [id])
+  reversedBy   LedgerTransaction? @relation("Reversal")
+  orderChange  OrderChange?
+
+  @@index([orderId])
+  @@index([paymentId])
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id            String   @id @default(cuid())
+  transactionId String
+  accountId     String
+  amount        Int // > 0 débito, < 0 crédito, nunca 0
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id])
+  account     LedgerAccount     @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@index([transactionId])
+}
+
+// Liquidación al restaurante por período: ventas − comisión − reembolsos.
+model Settlement {
+  id           String           @id @default(cuid())
+  restaurantId String
+  periodStart  DateTime         @db.Date
+  periodEnd    DateTime         @db.Date
+  grossSales   Int
+  commission   Int
+  refunds      Int
+  netAmount    Int
+  status       SettlementStatus @default(DRAFT)
+  paidAt       DateTime?        @db.Timestamptz(3)
+  reference    String? // nro. de transferencia
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+
+  restaurant Restaurant          @relation(fields: [restaurantId], references: [id])
+  ledgerTxs  LedgerTransaction[]
+
+  @@unique([restaurantId, periodStart, periodEnd])
+}
+
+// -----------------------------------------------------------------------------
+// Reclamos
+// -----------------------------------------------------------------------------
+
+model Claim {
+  id           String      @id @default(cuid())
+  orderId      String
+  customerId   String
+  restaurantId String
+  reason       ClaimReason
+  description  String
+  status       ClaimStatus @default(OPEN)
+  resolution   String?
+  refundAmount Int?
+  resolvedById String?
+  resolvedAt   DateTime?   @db.Timestamptz(3)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+
+  order      Order               @relation(fields: [orderId], references: [id])
+  customer   User                @relation("ClaimCustomer", fields: [customerId], references: [id])
+  restaurant Restaurant          @relation(fields: [restaurantId], references: [id])
+  resolvedBy User?               @relation("ClaimResolver", fields: [resolvedById], references: [id])
+  ledgerTxs  LedgerTransaction[]
+
+  @@index([status])
+  @@index([restaurantId])
+}
+
+// -----------------------------------------------------------------------------
+// Notificaciones
+// -----------------------------------------------------------------------------
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  orderId   String?
+  type      NotificationType
+  channel   NotificationChannel
+  title     String
+  body      String
+  data      Json?
+  status    NotificationStatus  @default(PENDING)
+  dedupeKey String              @unique // evita duplicar recordatorios si el cron corre dos veces
+  sentAt    DateTime?           @db.Timestamptz(3)
+  readAt    DateTime?           @db.Timestamptz(3)
+  error     String?
+  createdAt DateTime            @default(now()) @db.Timestamptz(3)
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
