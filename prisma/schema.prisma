@@ -146,6 +146,7 @@ enum LedgerAccountType {
   CUSTOMER_WALLET // pasivo: saldo del cliente (uno por usuario)
   RESTAURANT_PAYABLE // pasivo: lo que la plataforma le debe al restaurante (uno por restaurante)
   PLATFORM_COMMISSION // ingreso: comisiones de la plataforma
+  PLATFORM_PENALTY // ingreso: penalidades a restaurantes por cancelar
   GATEWAY_CLEARING // activo: cobrado por la pasarela, pendiente de acreditar a la cuenta bancaria
   PLATFORM_BANK // activo: cuenta bancaria de la plataforma
   PLATFORM_GOODWILL // gasto: reembolsos que absorbe la plataforma (reclamos)
@@ -423,6 +424,15 @@ model Restaurant {
 
   // Comisión de la plataforma (la define el super admin)
   commissionBps Int @default(1000)
+
+  // Si el RESTAURANTE cancela, el cliente siempre recibe el 100% en la billetera.
+  // Quién absorbe el costo es parte del acuerdo comercial (lo define el super admin):
+  // - restaurantCancelRefundsCommission: true → la plataforma devuelve su comisión;
+  //   false → la comisión la absorbe el restaurante.
+  // - restaurantCancelPenaltyBps: penalidad adicional sobre el total del pedido,
+  //   que se descuenta de la liquidación del restaurante (0 = sin penalidad).
+  restaurantCancelRefundsCommission Boolean @default(true)
+  restaurantCancelPenaltyBps        Int     @default(0)
 
   // Información nutricional obligatoria para publicar platos (la define el super admin)
   macrosRequired Boolean @default(false)

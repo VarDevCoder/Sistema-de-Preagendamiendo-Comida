@@ -340,6 +340,7 @@ Cuentas (`LedgerAccount.type`):
 | `PLATFORM_COMMISSION` | ingreso | plataforma |
 | `GATEWAY_CLEARING` | activo (lo cobró la pasarela, falta que deposite) | plataforma |
 | `PLATFORM_BANK` | activo | plataforma |
+| `PLATFORM_PENALTY` | ingreso (penalidades por cancelación del restaurante) | plataforma |
 | `PLATFORM_GOODWILL` | gasto (reembolsos que absorbe la plataforma) | plataforma |
 
 Convención: `amount > 0` débito, `amount < 0` crédito. **Saldo de billetera = −Σ amount** de su cuenta.
@@ -349,7 +350,8 @@ Ejemplos (pedido de 50.000 Gs con comisión del 10%, 30.000 Gs con tarjeta y 20.
 | Evento | Asientos |
 |---|---|
 | Pago aprobado | `GATEWAY_CLEARING +30.000` · `CUSTOMER_WALLET +20.000` · `RESTAURANT_PAYABLE −45.000` · `PLATFORM_COMMISSION −5.000` |
-| El restaurante cancela | `RESTAURANT_PAYABLE +45.000` · `PLATFORM_COMMISSION +5.000` · `CUSTOMER_WALLET −50.000` |
+| El restaurante cancela (política por defecto: se devuelve la comisión, sin penalidad) | `RESTAURANT_PAYABLE +45.000` · `PLATFORM_COMMISSION +5.000` · `CUSTOMER_WALLET −50.000` |
+| El restaurante cancela (acuerdo: absorbe la comisión + 5% de penalidad) | `RESTAURANT_PAYABLE +52.500` · `CUSTOMER_WALLET −50.000` · `PLATFORM_PENALTY −2.500` |
 | Liquidación pagada | `RESTAURANT_PAYABLE +X` · `PLATFORM_BANK −X` |
 
 Garantías en la base de datos (migración `integrity_and_ledger`, probadas en local):
@@ -381,9 +383,12 @@ Garantías en la base de datos (migración `integrity_and_ledger`, probadas en l
 
 ---
 
-## Supuestos que tomé (confirmalos o corregilos)
+## Supuestos (confirmados)
 
-1. **Cancelación por el restaurante**: el cliente recibe el 100% en la billetera y **la plataforma también devuelve su comisión** (se revierte el asiento completo). Si preferís cobrarle una penalidad al restaurante, se agrega como otro asiento.
+1. **Cancelación por el restaurante**: el cliente **siempre** recibe el 100% en la billetera. Quién absorbe el costo depende de cada negocio y lo configura el **super admin** por restaurante (es parte del acuerdo comercial, como la comisión):
+   - `restaurantCancelRefundsCommission` (por defecto `true`): la plataforma devuelve su comisión. Con `false`, la comisión la absorbe el restaurante.
+   - `restaurantCancelPenaltyBps` (por defecto `0`): penalidad adicional, como % del total del pedido, que se descuenta en la liquidación.
+   - Se aplica la política vigente **al momento de la cancelación**. Si el saldo `RESTAURANT_PAYABLE` queda negativo, se compensa en la próxima liquidación.
 2. **Cancelación de un pedido suelto por el cliente** (la especificación no lo define): se permite hasta la hora de corte, con reembolso a la billetera del `customerCancelRefundBps` del restaurante (100% por defecto).
 3. **Los descuentos no se acumulan**: un día del plan mensual lleva solo el descuento del plan, no el de anticipación.
 4. **Anticipación**: se mide desde la creación del pedido hasta el **inicio de la franja**.
