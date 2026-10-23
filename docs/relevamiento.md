@@ -176,7 +176,7 @@ Los identificadores (`RF-…`) sirven para referenciarlos en commits y PRs.
 | 4. Flujo de pedido del cliente | 🚧 | Rama `fase-4-pedidos`: backend de checkout, pagos y webhook listos; faltan correr tests de integración y toda la UI del cliente. |
 | 5. Plan mensual | ⏳ | Depende de 4 |
 | 6. Billetera, reembolsos, ledger, liquidaciones | ⏳ | Depende de 4 |
-| 7. Producción, dashboard, super admin | 🚧 | Rama `fase-7-produccion-admin`: producción (con PDF), pedidos del día y dashboard listos; faltan las páginas de `/admin`. |
+| 7. Producción, dashboard, super admin | ✅ | Rama `fase-7-produccion-admin`: producción (con PDF), pedidos del día, dashboard y ahora `/admin` (métricas globales, alta/edición/suspensión de restaurantes, reclamos con reembolso a billetera) probados contra datos reales en Neon. |
 | 8. Notificaciones y PWA | ✅ | Integrada a `main`. Build, migraciones/seed contra Neon y cron de recordatorios verificados (idempotente). Falta conectar las llamadas a `notify()` desde las fases 4-7. Ver [`fase-8-notificaciones-pwa.md`](fase-8-notificaciones-pwa.md). |
 | 9. Pulido, tests y README | ⏳ | Al final |
 

@@ -1,4 +1,4 @@
-import type { Allergen, OrderStatus, RestaurantStatus } from "@/generated/prisma/enums";
+import type { Allergen, ClaimReason, OrderStatus, RestaurantStatus } from "@/generated/prisma/enums";
 
 export const ALLERGEN_LABEL: Record<Allergen, string> = {
   GLUTEN: "Gluten",
@@ -30,4 +30,13 @@ export const RESTAURANT_STATUS_LABEL: Record<RestaurantStatus, string> = {
   ACTIVE: "Activo",
   SUSPENDED: "Suspendido",
   CLOSED: "Dado de baja",
+};
+
+export const CLAIM_REASON_LABEL: Record<ClaimReason, string> = {
+  NOT_DELIVERED: "No llegó el pedido",
+  WRONG_ITEMS: "Pedido incorrecto",
+  QUALITY: "Problema de calidad",
+  ALLERGY_ISSUE: "Problema con una alergia",
+  LATE: "Demora",
+  OTHER: "Otro",
 };
