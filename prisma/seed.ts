@@ -934,6 +934,29 @@ async function main() {
     );
   }
 
+  // --- Reclamos de ejemplo (Fase 7) ------------------------------------------
+  // Sobre pedidos ya entregados: uno abierto y otro en revisión.
+  {
+    const delivered = created.filter((c) => c.status === "DELIVERED");
+    const samples = [
+      { order: delivered.find((c) => c.draft.r === rosa), reason: "WRONG_ITEMS" as const, status: "OPEN" as const, description: "Pedí la milanesa con puré y vino con ensalada." },
+      { order: delivered.find((c) => c.draft.r === quincho), reason: "LATE" as const, status: "IN_REVIEW" as const, description: "Tuve que esperar 40 minutos para retirar el pedido." },
+    ];
+    for (const s of samples) {
+      if (!s.order) continue;
+      await db.claim.create({
+        data: {
+          orderId: s.order.orderId,
+          customerId: s.order.draft.customer.id,
+          restaurantId: s.order.draft.r.id,
+          reason: s.reason,
+          status: s.status,
+          description: s.description,
+        },
+      });
+    }
+  }
+
   await printSummary();
 }
 
