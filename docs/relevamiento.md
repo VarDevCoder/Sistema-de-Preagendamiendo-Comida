@@ -172,13 +172,15 @@ Los identificadores (`RF-…`) sirven para referenciarlos en commits y PRs.
 |---|---|---|
 | 1. Modelo de datos | ✅ | ~40 tablas, migraciones con CHECKs y ledger inmutable/balanceado por triggers. |
 | 2. Auth, roles y seed | ✅ | Login/registro, áreas por rol, proxy + DAL, seed con 3 restaurantes, ~230 pedidos, 2 planes, billeteras. 56 tests. |
-| 3. Panel del restaurante | 🚧 | En curso |
-| 4. Flujo de pedido del cliente | 🚧 | En curso |
+| 3. Panel del restaurante | 🚧 | Rama `fase-3-panel`: backend y navegación listos; faltan las páginas de UI. |
+| 4. Flujo de pedido del cliente | 🚧 | Rama `fase-4-pedidos`: backend de checkout, pagos y webhook listos; faltan correr tests de integración y toda la UI del cliente. |
 | 5. Plan mensual | ⏳ | Depende de 4 |
 | 6. Billetera, reembolsos, ledger, liquidaciones | ⏳ | Depende de 4 |
-| 7. Producción, dashboard, super admin | 🚧 | En curso |
-| 8. Notificaciones y PWA | 🚧 | En curso |
+| 7. Producción, dashboard, super admin | ✅ | Rama `fase-7-produccion-admin`: producción (con PDF), pedidos del día, dashboard y ahora `/admin` (métricas globales, alta/edición/suspensión de restaurantes, reclamos con reembolso a billetera) probados contra datos reales en Neon. |
+| 8. Notificaciones y PWA | ✅ | Integrada a `main`. Build, migraciones/seed contra Neon y cron de recordatorios verificados (idempotente). Falta conectar las llamadas a `notify()` desde las fases 4-7. Ver [`fase-8-notificaciones-pwa.md`](fase-8-notificaciones-pwa.md). |
 | 9. Pulido, tests y README | ⏳ | Al final |
+
+Para continuar con Claude Code: [`prompt-claude-code.md`](prompt-claude-code.md).
 
 ## 8. Plan por fase y criterios de aceptación
 
