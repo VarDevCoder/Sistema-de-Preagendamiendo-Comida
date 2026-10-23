@@ -12,5 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Los de integración (*.int.test.ts) necesitan Postgres: `npm run test:integration`.
+    exclude: ["src/**/*.int.test.ts", "node_modules/**"],
   },
 });
