@@ -177,7 +177,7 @@ Los identificadores (`RF-…`) sirven para referenciarlos en commits y PRs.
 | 5. Plan mensual | ⏳ | Depende de 4 |
 | 6. Billetera, reembolsos, ledger, liquidaciones | ⏳ | Depende de 4 |
 | 7. Producción, dashboard, super admin | 🚧 | Rama `fase-7-produccion-admin`: producción (con PDF), pedidos del día y dashboard listos; faltan las páginas de `/admin`. |
-| 8. Notificaciones y PWA | 🚧 | Rama `fase-8-pwa-notificaciones`: casi terminada; falta verificación final. |
+| 8. Notificaciones y PWA | ✅ | Integrada a `main`. Build, migraciones/seed contra Neon y cron de recordatorios verificados (idempotente). Falta conectar las llamadas a `notify()` desde las fases 4-7. Ver [`fase-8-notificaciones-pwa.md`](fase-8-notificaciones-pwa.md). |
 | 9. Pulido, tests y README | ⏳ | Al final |
 
 Para continuar con Claude Code: [`prompt-claude-code.md`](prompt-claude-code.md).
